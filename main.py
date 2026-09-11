@@ -39,7 +39,7 @@ GOOGLE_SERVICE_ACCOUNT_FILE = os.environ.get(
 )
 
 # Super Admin User ID (set multiplier and export all group sheets)
-ALLOWED_MULTIPLIER_USER_ID = 7157300503
+ALLOWED_MULTIPLIER_USER_ID = [7157300503, 995060043]
 
 REPORT_TIMEZONE = os.environ.get("REPORT_TIMEZONE", "Asia/Ho_Chi_Minh")
 
@@ -1739,7 +1739,7 @@ async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     # /reset is restricted to this Telegram user ID only.
-    if update.effective_user is None or update.effective_user.id != 7157300503:
+    if update.effective_user is None or update.effective_user.id != [995060043,7157300503]:
         await update.message.reply_text("⛔ You do not have permission to use /reset.")
         return
 
