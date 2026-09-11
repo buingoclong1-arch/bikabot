@@ -582,7 +582,7 @@ async def is_group_admin(
 
 def is_allowed_multiplier_user(update: Update) -> bool:
     user = update.effective_user
-    return bool(user and user.id == ALLOWED_MULTIPLIER_USER_ID)
+    return bool(user and user.id == ALLOWED_MULTIPLIER_USER_IDS)
 
 
 # =========================================================
@@ -1159,9 +1159,9 @@ async def export_google_sheet_command(
     if not update.message or not update.effective_user:
         return
 
-    if update.effective_user.id != ALLOWED_MULTIPLIER_USER_ID:
+    if update.effective_user.id != ALLOWED_MULTIPLIER_USER_IDS:
         await update.message.reply_text(
-            f"⛔ Only User ID {ALLOWED_MULTIPLIER_USER_ID} can use /gsheet."
+            f"⛔ Only User ID {ALLOWED_MULTIPLIER_USER_IDS} can use /gsheet."
         )
         return
 
@@ -1569,7 +1569,7 @@ async def setup_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message:
         await update.message.reply_text(
-            "👋 Garu Calculation Bot.\n"
+            "👋 Bika Calculation Bot.\n"
             "Use /excel to output Excel.\n"
             "Use /gsheet to export the daily report (ADMIN only).\n"
             "Google Sheets automatically syncs the latest data every 5 minutes."
@@ -1691,7 +1691,7 @@ async def set_multiplier_command(update: Update, context: ContextTypes.DEFAULT_T
         return
 
     if not is_allowed_multiplier_user(update):
-        await update.message.reply_text(f"⛔ Only User ID {ALLOWED_MULTIPLIER_USER_ID} can update the multiplier.")
+        await update.message.reply_text(f"⛔ Only User ID {ALLOWED_MULTIPLIER_USER_IDS} can update the multiplier.")
         return
 
     chat = update.effective_chat
