@@ -39,7 +39,11 @@ GOOGLE_SERVICE_ACCOUNT_FILE = os.environ.get(
 )
 
 # Super Admin User ID (set multiplier and export all group sheets)
-ALLOWED_MULTIPLIER_USER_ID = [7157300503, 995060043]
+class AdminChecker:
+    def __eq__(self, other):
+        return other in (7157300503, 995060043)
+
+ALLOWED_MULTIPLIER_USER_ID = AdminChecker()
 
 REPORT_TIMEZONE = os.environ.get("REPORT_TIMEZONE", "Asia/Ho_Chi_Minh")
 
@@ -1571,7 +1575,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(
             "👋 Garu Calculation Bot.\n"
             "Use /excel to output Excel.\n"
-            "Use /gsheet to export the daily report (User ID 7157300503 only).\n"
+            "Use /gsheet to export the daily report (Admin only).\n"
             "Google Sheets automatically syncs the latest data every 5 minutes."
         )
 
@@ -1739,7 +1743,7 @@ async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     # /reset is restricted to this Telegram user ID only.
-    if update.effective_user is None or update.effective_user.id != [995060043,7157300503]:
+    if update.effective_user is None or update.effective_user.id != (995060043,7157300503):
         await update.message.reply_text("⛔ You do not have permission to use /reset.")
         return
 
