@@ -1739,7 +1739,7 @@ async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     # /reset is restricted to this Telegram user ID only.
-            if update.effective_user is None or update.effective_user.id not in (995060043, 7157300503):
+    if update.effective_user is None or update.effective_user.id not in (995060043, 7157300503):
         await update.message.reply_text("⛔ You do not have permission to use /reset.")
         return
     chat = update.effective_chat
