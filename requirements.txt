@@ -1,0 +1,5 @@
+python-telegram-bot
+pandas
+openpyxl
+gspread
+google-auth
