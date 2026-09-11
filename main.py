@@ -1159,7 +1159,8 @@ async def export_google_sheet_command(
     if not update.message or not update.effective_user:
         return
 
-    if update.effective_user.id != ALLOWED_MULTIPLIER_USER_IDS:
+    # ĐÚNG: Kiểm tra xem ID có nằm trong danh sách hay không
+if update.effective_user.id not in ALLOWED_MULTIPLIER_USER_IDS:
         await update.message.reply_text(
             f"⛔ Only User ID {ALLOWED_MULTIPLIER_USER_IDS} can use /gsheet."
         )
