@@ -1886,7 +1886,7 @@ async def setup_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message:
         await update.message.reply_text(
-            "👋 Garu Calculation Bot.\n"
+            "👋 Bika Calculation Bot.\n"
             "Use /excel to output Excel.\n"
             "Use /gsheet to export the daily report to google sheet (Admin only).\n"
             "Use /reset to reset.\n"
