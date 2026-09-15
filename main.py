@@ -39,7 +39,7 @@ GOOGLE_SERVICE_ACCOUNT_FILE = os.environ.get(
 )
 
 # Super Admin User ID (set multiplier and export all group sheets)
-ALLOWED_MULTIPLIER_USER_IDS = [995060043, 7157300503]
+ALLOWED_MULTIPLIER_USER_ID = 7157300503
 
 REPORT_TIMEZONE = os.environ.get("REPORT_TIMEZONE", "Asia/Ho_Chi_Minh")
 
@@ -582,7 +582,7 @@ async def is_group_admin(
 
 def is_allowed_multiplier_user(update: Update) -> bool:
     user = update.effective_user
-    return bool(user and user.id == ALLOWED_MULTIPLIER_USER_IDS)
+    return bool(user and user.id == ALLOWED_MULTIPLIER_USER_ID)
 
 
 # =========================================================
@@ -1159,10 +1159,9 @@ async def export_google_sheet_command(
     if not update.message or not update.effective_user:
         return
 
-       # ĐÚNG: Kiểm tra xem ID có nằm trong danh sách hay không
-    if update.effective_user.id not in ALLOWED_MULTIPLIER_USER_IDS:
+    if update.effective_user.id != ALLOWED_MULTIPLIER_USER_ID:
         await update.message.reply_text(
-            f"⛔ Only User ID {ALLOWED_MULTIPLIER_USER_IDS} can use /gsheet."
+            f"⛔ Only User ID {ALLOWED_MULTIPLIER_USER_ID} can use /gsheet."
         )
         return
 
@@ -1175,14 +1174,10 @@ async def export_google_sheet_command(
             summary_date,
         )
 
-
         await update.message.reply_text(
             "✅ GOOGLE SHEETS EXPORT COMPLETED\n\n"
             f"📅 Date: {summary_date}\n"
             f"📊 Sheet: {sheet_title}\n"
-            "📋 Only the current daily report is updated; no new table is created for each day.\n"
-            "📊 Monthly reports have been removed.\n"
-            f"🧾 Data rows: {row_count}"
         )
     except Exception as error:
         logger.exception("Google Sheets daily export failed.")
@@ -1537,6 +1532,326 @@ def sort_group_worksheets_by_multiplier(spreadsheet) -> None:
 
 
 
+
+# =========================================================
+# DELETE GROUP DATA BY CHAT ID
+# =========================================================
+
+# Only this Telegram User ID can permanently delete a group by chat ID.
+GROUP_DATA_DELETE_USER_ID = ALLOWED_MULTIPLIER_USER_ID
+
+
+def get_group_info_by_chat_id(chat_id: int):
+    """Return the active group record before deletion."""
+    with get_connection() as conn:
+        return conn.execute(
+            """
+            SELECT chat_id, group_name, setup_by, setup_at, multiplier
+            FROM active_groups
+            WHERE chat_id = ?
+            """,
+            (chat_id,),
+        ).fetchone()
+
+
+def delete_group_database_data(chat_id: int) -> dict:
+    """
+    Permanently delete ALL database data belonging to one Telegram group.
+
+    Tables handled:
+      - active_groups
+      - member_orders
+      - transaction_history
+      - daily_member_summary
+
+    member_orders and daily_member_summary also have ON DELETE CASCADE
+    relationships to active_groups, but they are deleted explicitly so this
+    function remains safe even if an old database has different FK settings.
+    """
+    with get_connection() as conn:
+        group = conn.execute(
+            """
+            SELECT chat_id, group_name, setup_by, setup_at, multiplier
+            FROM active_groups
+            WHERE chat_id = ?
+            """,
+            (chat_id,),
+        ).fetchone()
+
+        counts = {
+            "active_groups": 0,
+            "member_orders": 0,
+            "transaction_history": 0,
+            "daily_member_summary": 0,
+        }
+
+        if not group:
+            # The group may already be inactive, but historical data could
+            # still exist. Clean all group-scoped tables anyway.
+            cursor = conn.execute(
+                "DELETE FROM member_orders WHERE chat_id = ?",
+                (chat_id,),
+            )
+            counts["member_orders"] = max(cursor.rowcount, 0)
+
+            cursor = conn.execute(
+                "DELETE FROM transaction_history WHERE chat_id = ?",
+                (chat_id,),
+            )
+            counts["transaction_history"] = max(cursor.rowcount, 0)
+
+            cursor = conn.execute(
+                "DELETE FROM daily_member_summary WHERE chat_id = ?",
+                (chat_id,),
+            )
+            counts["daily_member_summary"] = max(cursor.rowcount, 0)
+
+            conn.commit()
+
+            counts["total"] = sum(counts.values())
+            return {
+                "group": None,
+                "counts": counts,
+            }
+
+        # Delete child/history data first.
+        cursor = conn.execute(
+            "DELETE FROM member_orders WHERE chat_id = ?",
+            (chat_id,),
+        )
+        counts["member_orders"] = max(cursor.rowcount, 0)
+
+        cursor = conn.execute(
+            "DELETE FROM transaction_history WHERE chat_id = ?",
+            (chat_id,),
+        )
+        counts["transaction_history"] = max(cursor.rowcount, 0)
+
+        cursor = conn.execute(
+            "DELETE FROM daily_member_summary WHERE chat_id = ?",
+            (chat_id,),
+        )
+        counts["daily_member_summary"] = max(cursor.rowcount, 0)
+
+        # Finally remove the activation record itself.
+        cursor = conn.execute(
+            "DELETE FROM active_groups WHERE chat_id = ?",
+            (chat_id,),
+        )
+        counts["active_groups"] = max(cursor.rowcount, 0)
+
+        conn.commit()
+
+        counts["total"] = sum(counts.values())
+
+        return {
+            "group": dict(group),
+            "counts": counts,
+        }
+
+
+def delete_group_google_sheet(chat_id: int, group_name: str | None) -> str | None:
+    """
+    Delete the dedicated BOT_GROUP_* worksheet for this group.
+
+    Returns:
+      worksheet title if deleted,
+      None if no matching worksheet exists or Google Sheets is not configured.
+    """
+    if not GOOGLE_SHEET_ID or not group_name:
+        return None
+
+    client = get_google_sheet_client()
+    spreadsheet = client.open_by_key(GOOGLE_SHEET_ID)
+
+    title = group_sheet_title(group_name)
+
+    try:
+        ws = spreadsheet.worksheet(title)
+    except gspread.WorksheetNotFound:
+        return None
+
+    spreadsheet.del_worksheet(ws)
+    logger.info(
+        "Deleted Google Sheets group worksheet: chat_id=%s title=%s",
+        chat_id,
+        title,
+    )
+    return title
+
+
+async def delete_group_by_id_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    """
+    Permanently delete one group's data by Telegram chat ID.
+
+    Usage:
+        /deletegroup -1001234567890
+
+    This command is available only to GROUP_DATA_DELETE_USER_ID.
+    It can be used from a private chat or from any group.
+    """
+    if not update.message or not update.effective_user:
+        return
+
+    user = update.effective_user
+
+    if user.id != GROUP_DATA_DELETE_USER_ID:
+        # Do not reveal any information to unauthorized users.
+        return
+
+    if not context.args:
+        await update.message.reply_text(
+            "⚠️ Usage:\n/deletegroup <chat_id>\n\n"
+            "Example:\n/deletegroup -1001234567890"
+        )
+        return
+
+    try:
+        chat_id = int(context.args[0])
+    except (TypeError, ValueError):
+        await update.message.reply_text(
+            "❌ Invalid chat ID.\n\n"
+            "Example:\n/deletegroup -1001234567890"
+        )
+        return
+
+    # Telegram group/supergroup IDs are normally negative.
+    # Do not hard-reject positive IDs because this also keeps the command
+    # useful for legacy/test databases.
+    group = await asyncio.to_thread(get_group_info_by_chat_id, chat_id)
+
+    if not group:
+        # The activation row may already be gone while historical rows remain.
+        # Check all group-scoped tables before reporting "no data".
+        with get_connection() as conn:
+            remaining = {}
+            for table in (
+                "member_orders",
+                "transaction_history",
+                "daily_member_summary",
+            ):
+                remaining[table] = int(
+                    conn.execute(
+                        f"SELECT COUNT(*) AS n FROM {table} WHERE chat_id = ?",
+                        (chat_id,),
+                    ).fetchone()["n"]
+                    or 0
+                )
+
+        total_remaining = sum(remaining.values())
+
+        if total_remaining == 0:
+            await update.message.reply_text(
+                "ℹ️ No database data was found for this Group ID.\n\n"
+                f"📌 Group ID: {chat_id}"
+            )
+            return
+
+        # No active_groups record exists, so there is no reliable group name
+        # from the database. Clean the remaining records directly.
+        try:
+            result = await asyncio.to_thread(
+                delete_group_database_data,
+                chat_id,
+            )
+        except Exception as error:
+            logger.exception(
+                "Delete group data failed for chat_id=%s",
+                chat_id,
+            )
+            await update.message.reply_text(
+                "❌ GROUP DATA DELETE FAILED\n\n"
+                f"Group ID: {chat_id}\n"
+                f"Error: {error}"
+            )
+            return
+
+        counts = result["counts"]
+        await update.message.reply_text(
+            "✅ GROUP DATA DELETED\n\n"
+            f"📌 Group ID: {chat_id}\n"
+            f"👥 Member records: {counts['member_orders']}\n"
+            f"🧾 Transaction records: {counts['transaction_history']}\n"
+            f"📅 Daily records: {counts['daily_member_summary']}\n\n"
+            "The group had already been inactive, so no active-group record existed."
+        )
+        return
+
+    group_name = group["group_name"] or "Unknown Group"
+
+    # Remove the dedicated Google Sheets worksheet first. If this fails,
+    # stop before deleting the database so the operation is not half-completed.
+    deleted_sheet = None
+    if GOOGLE_SHEET_ID:
+        try:
+            deleted_sheet = await asyncio.to_thread(
+                delete_group_google_sheet,
+                chat_id,
+                group_name,
+            )
+        except Exception as error:
+            logger.exception(
+                "Could not delete Google Sheets worksheet for chat_id=%s",
+                chat_id,
+            )
+            await update.message.reply_text(
+                "❌ GROUP DATA DELETE CANCELLED\n\n"
+                f"📌 Group: {group_name}\n"
+                f"🆔 Group ID: {chat_id}\n\n"
+                "The Google Sheets group worksheet could not be deleted.\n"
+                "The database was NOT deleted to prevent partial data removal.\n\n"
+                f"Error: {error}"
+            )
+            return
+
+    try:
+        result = await asyncio.to_thread(
+            delete_group_database_data,
+            chat_id,
+        )
+    except Exception as error:
+        logger.exception(
+            "Database group deletion failed for chat_id=%s",
+            chat_id,
+        )
+
+        # The Google Sheet may already have been removed. Tell the owner
+        # exactly what happened rather than pretending the operation was complete.
+        await update.message.reply_text(
+            "❌ GROUP DATA DELETE PARTIALLY FAILED\n\n"
+            f"📌 Group: {group_name}\n"
+            f"🆔 Group ID: {chat_id}\n\n"
+            "Google Sheets cleanup completed, but database deletion failed.\n"
+            "Check the Render logs/database before retrying.\n\n"
+            f"Error: {error}"
+        )
+        return
+
+    counts = result["counts"]
+
+    sheet_status = (
+        f"🗑 Google Sheet: {deleted_sheet}"
+        if deleted_sheet
+        else "ℹ️ Google Sheet: No dedicated group sheet found"
+    )
+
+    await update.message.reply_text(
+        "✅ GROUP DATA PERMANENTLY DELETED\n\n"
+        f"📌 Group: {group_name}\n"
+        f"🆔 Group ID: {chat_id}\n\n"
+        f"👥 Member records: {counts['member_orders']}\n"
+        f"🧾 Transaction records: {counts['transaction_history']}\n"
+        f"📅 Daily records: {counts['daily_member_summary']}\n"
+        f"🔐 Activation record: {counts['active_groups']}\n"
+        f"{sheet_status}\n\n"
+        "The group is now inactive and all database records for this Group ID "
+        "have been removed."
+    )
+
+
 # =========================================================
 # COMMAND HANDLERS
 # =========================================================
@@ -1571,9 +1886,13 @@ async def setup_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message:
         await update.message.reply_text(
-            "👋 Bika Calculation Bot.\n"
+            "👋 Garu Calculation Bot.\n"
             "Use /excel to output Excel.\n"
-            "Use /gsheet to export the daily report (ADMIN only).\n"
+            "Use /gsheet to export the daily report to google sheet (Admin only).\n"
+            "Use /reset to reset.\n"
+	    "Use /view to view total.\n"
+	    "Use /setmultiplier for setting group rate.\n"
+	    "Use /setup to active bot.\n"
             "Google Sheets automatically syncs the latest data every 5 minutes."
         )
 
@@ -1693,7 +2012,7 @@ async def set_multiplier_command(update: Update, context: ContextTypes.DEFAULT_T
         return
 
     if not is_allowed_multiplier_user(update):
-        await update.message.reply_text(f"⛔ Only User ID {ALLOWED_MULTIPLIER_USER_IDS} can update the multiplier.")
+        await update.message.reply_text(f"⛔ Only User ID {ALLOWED_MULTIPLIER_USER_ID} can update the multiplier.")
         return
 
     chat = update.effective_chat
@@ -1741,9 +2060,10 @@ async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     # /reset is restricted to this Telegram user ID only.
-    if update.effective_user is None or update.effective_user.id not in (995060043, 7157300503):
+    if update.effective_user is None or update.effective_user.id != 7157300503:
         await update.message.reply_text("⛔ You do not have permission to use /reset.")
         return
+
     chat = update.effective_chat
     if not chat:
         return
@@ -1800,8 +2120,6 @@ async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             f"📌 Group: {snapshot['group_name']}\n"
             f"💰 Total before reset: ${snapshot['total_cents'] / 100:.2f}\n"
             f"📊 Total after multiplier: ${snapshot['multiplied_cents'] / 100:.2f}\n"
-            f"👥 Members: {snapshot['member_count']}\n\n"
-            f"🗂 Added one row to: {sheet_name}\n"
             "♻️ Database has been reset."
         )
 
@@ -1831,6 +2149,7 @@ def main() -> None:
     application = Application.builder().token(TOKEN).post_init(post_init).build()
 
     application.add_handler(CommandHandler("setup", setup_command))
+    application.add_handler(CommandHandler("deletegroup", delete_group_by_id_command))
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("minus", minus_command))
     application.add_handler(CommandHandler("me", view_my_receipt))
