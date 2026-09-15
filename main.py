@@ -1239,23 +1239,56 @@ async def post_init(application: Application) -> None:
 # GROUP SHEET RESET HISTORY
 # =========================================================
 
-def group_sheet_title(group_name: str) -> str:
-    """Stable worksheet name for a Telegram group."""
+def group_sheet_title(chat_id: int) -> str:
+    """Stable worksheet name based on Telegram Group ID, not group name."""
+    return f"BOT_GROUP_{int(chat_id)}"[:100]
+
+
+def legacy_group_sheet_title(group_name: str) -> str:
+    """Old worksheet naming format, kept only for automatic migration."""
     cleaned = re.sub(r"[\[\]\:\*\?\/\\]", "", str(group_name)).strip()
     return (f"BOT_GROUP_{cleaned}"[:100] or "BOT_GROUP")
 
 
-def get_or_create_group_worksheet(spreadsheet, group_name: str):
-    title = group_sheet_title(group_name)
+def get_or_create_group_worksheet(
+    spreadsheet,
+    chat_id: int,
+    group_name: str | None = None,
+):
+    """
+    Get the worksheet by Telegram Group ID.
+
+    If the old BOT_GROUP_<group name> worksheet exists, rename it to
+    BOT_GROUP_<chat_id> so the existing RESET HISTORY is preserved.
+    """
+    title = group_sheet_title(chat_id)
+
     try:
         return spreadsheet.worksheet(title)
     except gspread.WorksheetNotFound:
-        return spreadsheet.add_worksheet(
-            title=title,
-            rows=1000,
-            cols=12,
-        )
+        pass
 
+    if group_name:
+        legacy_title = legacy_group_sheet_title(group_name)
+        if legacy_title != title:
+            try:
+                legacy_ws = spreadsheet.worksheet(legacy_title)
+                legacy_ws.update_title(title)
+                logger.info(
+                    "Migrated group worksheet from name to ID: chat_id=%s old=%s new=%s",
+                    chat_id,
+                    legacy_title,
+                    title,
+                )
+                return legacy_ws
+            except gspread.WorksheetNotFound:
+                pass
+
+    return spreadsheet.add_worksheet(
+        title=title,
+        rows=1000,
+        cols=12,
+    )
 
 def snapshot_current_group(chat_id: int):
     """Read the current group state before /reset."""
@@ -1304,7 +1337,11 @@ def append_reset_history_to_group_sheet(snapshot: dict) -> str:
     """
     client = get_google_sheet_client()
     spreadsheet = client.open_by_key(GOOGLE_SHEET_ID)
-    ws = get_or_create_group_worksheet(spreadsheet, snapshot["group_name"])
+    ws = get_or_create_group_worksheet(
+        spreadsheet,
+        snapshot["chat_id"],
+        snapshot["group_name"],
+    )
 
     # Check whether this is a newly-created/empty worksheet.
     existing_values = ws.get_all_values()
@@ -1416,7 +1453,11 @@ def update_current_group_sheet(chat_id: int):
     total_cents, multiplier, multiplied_cents = get_group_summary(chat_id)
     client = get_google_sheet_client()
     spreadsheet = client.open_by_key(GOOGLE_SHEET_ID)
-    ws = get_or_create_group_worksheet(spreadsheet, group["group_name"])
+    ws = get_or_create_group_worksheet(
+        spreadsheet,
+        group["chat_id"],
+        group["group_name"],
+    )
 
     current_rows = [
         ["CURRENT SUMMARY"],
@@ -1654,30 +1695,36 @@ def delete_group_google_sheet(chat_id: int, group_name: str | None) -> str | Non
     """
     Delete the dedicated BOT_GROUP_* worksheet for this group.
 
-    Returns:
-      worksheet title if deleted,
-      None if no matching worksheet exists or Google Sheets is not configured.
+    Primary lookup uses Telegram Group ID. The old name-based worksheet is
+    checked only as a backward-compatible fallback.
     """
-    if not GOOGLE_SHEET_ID or not group_name:
+    if not GOOGLE_SHEET_ID:
         return None
 
     client = get_google_sheet_client()
     spreadsheet = client.open_by_key(GOOGLE_SHEET_ID)
 
-    title = group_sheet_title(group_name)
+    titles_to_try = [group_sheet_title(chat_id)]
+    if group_name:
+        legacy_title = legacy_group_sheet_title(group_name)
+        if legacy_title not in titles_to_try:
+            titles_to_try.append(legacy_title)
 
-    try:
-        ws = spreadsheet.worksheet(title)
-    except gspread.WorksheetNotFound:
-        return None
+    for title in titles_to_try:
+        try:
+            ws = spreadsheet.worksheet(title)
+        except gspread.WorksheetNotFound:
+            continue
 
-    spreadsheet.del_worksheet(ws)
-    logger.info(
-        "Deleted Google Sheets group worksheet: chat_id=%s title=%s",
-        chat_id,
-        title,
-    )
-    return title
+        spreadsheet.del_worksheet(ws)
+        logger.info(
+            "Deleted Google Sheets group worksheet: chat_id=%s title=%s",
+            chat_id,
+            title,
+        )
+        return title
+
+    return None
 
 
 async def delete_group_by_id_command(
